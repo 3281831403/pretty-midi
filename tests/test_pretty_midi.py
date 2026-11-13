@@ -599,3 +599,189 @@ def test_get_intervals_and_pitches():
 
     assert np.allclose(intervals, expected_intervals)
     assert np.allclose(pitches, expected_pitches)
+
+
+def _write_and_reread(pm_song):
+    with NamedTemporaryFile() as file:
+        pm_song.write(file)
+        file.seek(0)
+        return pretty_midi.PrettyMIDI(file)
+
+
+def _mido_file(tracks):
+    mido_file = mido.MidiFile(ticks_per_beat=480)
+    for track in tracks:
+        mido_file.tracks.append(track)
+    return mido_file
+
+
+def _load_mido(mido_file):
+    with NamedTemporaryFile() as file:
+        mido_file.save(file=file)
+        file.seek(0)
+        return pretty_midi.PrettyMIDI(file)
+
+
+def test_key_signature_spelling_round_trip():
+    # Sharp/flat direction in the source file must be preserved.
+    timing_track = mido.MidiTrack([
+        mido.MetaMessage('time_signature', time=0),
+        mido.MetaMessage('set_tempo', time=0, tempo=mido.bpm2tempo(120))])
+    for index, key_name in enumerate(['Gb', 'Cb', 'C#', 'Ebm']):
+        timing_track.append(mido.MetaMessage(
+            'key_signature', time=index * 480, key=key_name))
+    timing_track.append(mido.MetaMessage('end_of_track', time=0))
+
+    pm_song = _load_mido(_mido_file([timing_track]))
+    assert [ks.key_name for ks in pm_song.key_signature_changes] == \
+        ['Gb', 'Cb', 'C#', 'Ebm']
+
+    reread = _write_and_reread(pm_song)
+    assert [ks.key_name for ks in reread.key_signature_changes] == \
+        ['Gb', 'Cb', 'C#', 'Ebm']
+
+
+def test_hand_built_key_signature_keeps_default_spelling():
+    # A KeySignature constructed by hand keeps the historical write default.
+    pm_song = pretty_midi.PrettyMIDI()
+    key_signature = pretty_midi.KeySignature(6, 0.)
+    assert key_signature.key_name is None
+    pm_song.key_signature_changes = [key_signature]
+
+    with NamedTemporaryFile() as file:
+        pm_song.write(file)
+        file.seek(0)
+        written = mido.MidiFile(file=file)
+    assert [event.key for event in written.tracks[0]
+            if event.type == 'key_signature'] == ['F#']
+
+
+def test_control_only_track_round_trips_as_instrument():
+    timing_track = mido.MidiTrack([
+        mido.MetaMessage('time_signature', time=0),
+        mido.MetaMessage('end_of_track', time=0)])
+    control_track = mido.MidiTrack([
+        mido.Message('control_change', time=0, channel=2, control=64,
+                     value=127),
+        mido.Message('pitchwheel', time=120, channel=2, pitch=8191),
+        mido.MetaMessage('end_of_track', time=0)])
+
+    pm_song = _load_mido(_mido_file([timing_track, control_track]))
+    assert len(pm_song.instruments) == 1
+    instrument = pm_song.instruments[0]
+    assert instrument.notes == []
+    assert len(instrument.control_changes) == 1
+    assert len(instrument.pitch_bends) == 1
+    assert instrument.channel == 2
+
+    reread = _write_and_reread(pm_song)
+    assert len(reread.instruments) == 1
+    assert len(reread.instruments[0].control_changes) == 1
+    assert len(reread.instruments[0].pitch_bends) == 1
+    assert reread.instruments[0].channel == 2
+
+
+def test_control_events_before_first_note_stay_on_one_instrument():
+    timing_track = mido.MidiTrack([mido.MetaMessage('end_of_track', time=0)])
+    track = mido.MidiTrack([
+        mido.Message('control_change', time=0, channel=4, control=7,
+                     value=100),
+        mido.Message('program_change', time=0, channel=4, program=20),
+        mido.Message('note_on', time=240, channel=4, note=60, velocity=90),
+        mido.Message('note_on', time=240, channel=4, note=60, velocity=0),
+        mido.MetaMessage('end_of_track', time=0)])
+
+    pm_song = _load_mido(_mido_file([timing_track, track]))
+    assert len(pm_song.instruments) == 1
+    instrument = pm_song.instruments[0]
+    assert len(instrument.notes) == 1
+    assert len(instrument.control_changes) == 1
+    assert instrument.program == 20
+    assert instrument.channel == 4
+
+    reread = _write_and_reread(pm_song)
+    assert len(reread.instruments) == 1
+    assert len(reread.instruments[0].notes) == 1
+    assert len(reread.instruments[0].control_changes) == 1
+
+
+def test_written_channels_follow_source_file():
+    tracks = [mido.MidiTrack([mido.MetaMessage('end_of_track', time=0)])]
+    for channel in (0, 2, 5):
+        tracks.append(mido.MidiTrack([
+            mido.Message('program_change', time=0, channel=channel,
+                         program=channel),
+            mido.Message('note_on', time=0, channel=channel, note=60,
+                         velocity=90),
+            mido.Message('note_on', time=240, channel=channel, note=60,
+                         velocity=0),
+            mido.MetaMessage('end_of_track', time=0)]))
+
+    pm_song = _load_mido(_mido_file(tracks))
+    assert sorted(i.channel for i in pm_song.instruments) == [0, 2, 5]
+
+    with NamedTemporaryFile() as file:
+        pm_song.write(file)
+        file.seek(0)
+        written = mido.MidiFile(file=file)
+    channels = sorted(
+        {event.channel for event in track if hasattr(event, 'channel')}
+        for track in written.tracks[1:])
+    assert channels == [{0}, {2}, {5}]
+
+
+def test_hand_built_instrument_keeps_default_channel_assignment():
+    pm_song = pretty_midi.PrettyMIDI()
+    first = pretty_midi.Instrument(0)
+    second = pretty_midi.Instrument(1)
+    assert first.channel is None and second.channel is None
+    pm_song.instruments = [first, second]
+
+    with NamedTemporaryFile() as file:
+        pm_song.write(file)
+        file.seek(0)
+        written = mido.MidiFile(file=file)
+    channels = [
+        {event.channel for event in track if hasattr(event, 'channel')}
+        for track in written.tracks[1:]]
+    assert channels == [{0}, {1}]
+
+
+def test_track_name_after_first_note_is_loaded():
+    timing_track = mido.MidiTrack([mido.MetaMessage('end_of_track', time=0)])
+    track = mido.MidiTrack([
+        mido.Message('program_change', time=0, channel=5, program=0),
+        mido.Message('note_on', time=0, channel=5, note=60, velocity=100),
+        mido.MetaMessage('track_name', time=0, name='Late Name'),
+        mido.Message('note_on', time=480, channel=5, note=60, velocity=0),
+        mido.MetaMessage('end_of_track', time=0)])
+
+    pm_song = _load_mido(_mido_file([timing_track, track]))
+    assert pm_song.instruments[0].name == 'Late Name'
+    reread = _write_and_reread(pm_song)
+    assert reread.instruments[0].name == 'Late Name'
+
+
+def test_note_uses_program_active_at_note_on():
+    timing_track = mido.MidiTrack([mido.MetaMessage('end_of_track', time=0)])
+    # Note 64 is held across a program change; note 65 starts after it.
+    track = mido.MidiTrack([
+        mido.Message('program_change', time=0, channel=3, program=40),
+        mido.Message('note_on', time=0, channel=3, note=64, velocity=90),
+        mido.Message('program_change', time=240, channel=3, program=41),
+        mido.Message('note_on', time=0, channel=3, note=65, velocity=90),
+        mido.Message('note_on', time=240, channel=3, note=64, velocity=0),
+        mido.Message('note_on', time=240, channel=3, note=65, velocity=0),
+        mido.MetaMessage('end_of_track', time=0)])
+
+    pm_song = _load_mido(_mido_file([timing_track, track]))
+    by_program = {instrument.program:
+                  sorted(note.pitch for note in instrument.notes)
+                  for instrument in pm_song.instruments}
+    assert by_program == {40: [64], 41: [65]}
+
+    reread = _write_and_reread(pm_song)
+    by_program_reread = {instrument.program:
+                         sorted(note.pitch for note in instrument.notes)
+                         for instrument in reread.instruments}
+    assert by_program_reread == {40: [64], 41: [65]}

@@ -21,6 +21,12 @@ class Instrument(object):
         Is the instrument a drum instrument (channel 9)?
     name : str
         Name of the instrument.
+    channel : int or None
+        MIDI channel the instrument's events are stored on, in ``[0, 15]``.
+        Populated when reading a MIDI file so that writing the data back out
+        preserves the original channel.  ``None`` (the default for
+        hand-constructed instruments) leaves channel assignment up to the
+        writer, which assigns channels in instrument order as it always has.
 
     Attributes
     ----------
@@ -30,6 +36,9 @@ class Instrument(object):
         Is the instrument a drum instrument (channel 9)?
     name : str
         Name of the instrument.
+    channel : int or None
+        MIDI channel of the instrument, or ``None`` if it was not read from a
+        file.
     notes : list
         List of :class:`pretty_midi.Note` objects.
     pitch_bends : list
@@ -39,13 +48,15 @@ class Instrument(object):
 
     """
 
-    def __init__(self, program, is_drum=False, name=''):
+    def __init__(self, program, is_drum=False, name='', channel=None):
         """Create the Instrument.
 
         """
         self.program = program
         self.is_drum = is_drum
         self.name = name
+        # None means the channel was not specified; the writer picks one.
+        self.channel = channel
         self.notes = []
         self.pitch_bends = []
         self.control_changes = []

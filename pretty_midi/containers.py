@@ -148,6 +148,12 @@ class KeySignature(object):
         For example, 0 is C Major, 12 is C minor.
     time : float
         Time of event in seconds.
+    key_name : str or None
+        Spelling of the key as it appeared in the source MIDI file, e.g.
+        ``'Gb'`` rather than the enharmonically equivalent ``'F#'``.  ``None``
+        for key signatures which were constructed by hand (in which case the
+        default flat-preferring spelling of ``key_number`` is used when the
+        key signature is written out).
 
     Examples
     --------
@@ -171,6 +177,11 @@ class KeySignature(object):
 
         self.key_number = key_number
         self.time = time
+        # When populated from a MIDI file, this holds the exact key spelling
+        # (sharp/flat direction) found in the file.  Hand-constructed key
+        # signatures leave it as None, so writing keeps the historical
+        # default spelling derived from ``key_number``.
+        self.key_name = None
 
     def __repr__(self):
         return "KeySignature(key_number={}, time={})".format(
